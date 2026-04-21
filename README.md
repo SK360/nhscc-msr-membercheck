@@ -1,45 +1,54 @@
-# MSR Member Role Checker
+# MSR Membership Utility
 
-A utility for club administrators to audit and fix member roles in [MotorsportReg](https://www.motorsportreg.com/) (MSR). It scans past events for attendees who purchased a membership renewal package and verifies that each person's MSR member record has the `Member` role assigned — offering to fix any that are missing.
+A command-line utility for club administrators to audit membership data in [MotorsportReg](https://www.motorsportreg.com/) (MSR). It provides several tools for verifying member roles, finding expired memberships, listing member types, and detecting duplicate accounts.
 
-## What it does
+## Features
 
-1. Fetches all past events for the configured year from the MSR API
-2. Scans each event's attendee list for anyone who purchased a membership renewal package
-3. Looks up each purchaser's member record and checks for the `Member` role
-4. Prints a summary table showing who has the role and who is missing it
-5. Prompts to automatically fix any members missing the `Member` role
-6. Saves full results to `msr_membership_role_check.json`
+| Flag | What it does |
+|---|---|
+| `--check-roles` | Scans past 2026 events for members who purchased a renewal package, verifies each has the `Member` role, and offers to fix any that are missing. |
+| `--expired-members` | Lists all current `Member`-typed accounts whose `memberEnd` date is in the past (or not set). Works regardless of whether the member renewed online or offline. |
+| `--member-types` | Prints all available member type labels from MSR. |
+| `--find-duplicates` | Scans the full member list for suspected duplicate accounts, matched by email, normalized name, or phone number. |
+| *(no flags)* | Prints the usage screen. |
 
 ## Requirements
 
 - Python 3.8+
-- `requests` library
+- `requests`
+- `python-dotenv`
 
 ```bash
-pip install requests
+pip install requests python-dotenv
 ```
 
 ## Configuration
 
-Edit the constants at the top of `membership.py`:
+Credentials are loaded from a `.env` file in the project root (never committed). Create one with:
 
-| Variable | Description |
-|---|---|
-| `MSR_USERNAME` | Admin email address for your MSR account |
-| `MSR_PASSWORD` | MSR account password |
-| `ORGANIZATION_ID` | Your 35-character MSR organization ID |
-| `MEMBERSHIP_PACKAGES` | Set of membership package names to match (edit to match your club's package names) |
+```
+MSR_USERNAME=your_admin_email@example.com
+MSR_PASSWORD=your_password
+MSR_ORGANIZATION_ID=your-35-char-org-id-here
+```
 
-Your organization ID can be found in the MSR admin panel URL or via the API.
+Your organization ID can be found in the MSR admin panel URL or via the API at `motorsportreg.com/em360/index.cfm/event/profile.api`.
+
+You may also want to edit the `MEMBERSHIP_PACKAGES` set near the top of `membership.py` to match the exact renewal package names your club uses.
 
 ## Usage
 
 ```bash
-python membership.py
+python membership.py                    # show usage screen
+python membership.py --check-roles
+python membership.py --expired-members
+python membership.py --member-types
+python membership.py --find-duplicates
 ```
 
-The script will print progress as it scans events, then display a results table:
+### `--check-roles`
+
+Scans every past 2026 event for attendees who bought a renewal package, then verifies each purchaser's MSR record has the `Member` role assigned. Prints a summary table and prompts to fix any missing roles:
 
 ```
 NAME                      EMAIL                          HAS MEMBER   CURRENT TYPES
@@ -48,20 +57,32 @@ Jane Smith                jane@example.com               ✓            Member, 
 John Doe                  john@example.com               ✗ MISSING    Non-Member, Driver
 ```
 
-If any members are missing the `Member` role, you'll be prompted:
+Entering `yes` at the prompt updates each affected record via the API — removing `Non-Member` and adding `Member` while preserving all other roles. Results saved to `msr_membership_role_check.json`.
 
-```
-Fix these members now? (yes/no):
-```
+### `--expired-members`
 
-Entering `yes` will update each affected member's record via the API, removing the `Non-Member` role and adding `Member` while preserving all other roles.
+Fetches every account currently typed `Member` and pulls each individual record to check the `memberEnd` date. Anyone whose date is in the past (or missing) appears in the report. Unlike `--check-roles`, this does not depend on event purchases — it works for offline renewals too. Results saved to `msr_expired_members.json`.
 
-## Output
+Note: this makes one API call per member, so it's slower than the other commands.
 
-Full results are always saved to `msr_membership_role_check.json` in the current directory, regardless of whether any fixes were applied.
+### `--member-types`
+
+Prints every member type label configured in your MSR organization (e.g. `Member`, `Non-Member`, `Life Member`, `Season Pass`, `Attendee`, `Instructor`). Useful for verifying role names before modifying the role-fix logic.
+
+### `--find-duplicates`
+
+Pulls the full member list and groups accounts that share the same email (case-insensitive), first+last name (non-alphabetic characters stripped), or phone number (last 10 digits). Only groups with more than one match are reported. Results saved to `msr_duplicate_members.json`.
+
+## Output files
+
+All JSON output files are gitignored by default since they may contain member PII:
+
+- `msr_membership_role_check.json`
+- `msr_expired_members.json`
+- `msr_duplicate_members.json`
 
 ## Notes
 
-- The script only scans **past** events (events with a start date before today)
-- Each member is only counted once even if they attended multiple events
-- The `MEMBERSHIP_PACKAGES` set must match the exact package names used in MSR
+- The role-check scan only looks at **past** events (start date before today)
+- Each member is only counted once even if they appear in multiple events
+- `memberEnd` dates are parsed from ISO (`YYYY-MM-DD`), US (`MM/DD/YYYY`), or short-year (`MM/DD/YY`) formats
