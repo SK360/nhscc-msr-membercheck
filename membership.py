@@ -406,15 +406,85 @@ def run_duplicate_scan():
         json.dump(dups, f, indent=2)
     print(f"✓ Full results saved to {output_file}")
 
+# ─── --missing-role ───────────────────────────────────────────────────────────
+def run_missing_role():
+    current_year = datetime.now(timezone.utc).year
+    expected_end = datetime(current_year, 12, 31).date()
+
+    print("Fetching full member list...")
+    try:
+        all_members = get_all_members()
+    except requests.HTTPError as e:
+        print(f"⚠ Could not fetch member list: {e}")
+        return
+    print(f"  ({len(all_members)} total members)")
+    print(f"  Fetching individual records...\n")
+
+    mismatched = []
+    for i, m in enumerate(all_members, 1):
+        member_id = m.get("id", "")
+        name = f"{m.get('firstName','')} {m.get('lastName','')}".strip()
+        print(f"  [{i}/{len(all_members)}] {name}...", end=" ", flush=True)
+        try:
+            detail = get_member(member_id)
+        except requests.HTTPError as e:
+            print(f"⚠ skipped ({e})")
+            continue
+
+        raw_types  = detail.get("types", [])
+        type_names = [t if isinstance(t, str) else t.get("name", "") for t in raw_types]
+        has_member = any(t.lower() == "member" for t in type_names)
+
+        end_date = parse_member_end(detail.get("memberEnd", ""))
+        valid_end = end_date == expected_end
+
+        if valid_end and not has_member:
+            print("*** valid date, missing Member role ***")
+            detail["_type_names"] = type_names
+            mismatched.append(detail)
+        else:
+            print("ok" if has_member else "skip (no valid date)")
+
+    mismatched.sort(key=lambda x: f"{x.get('lastName','')} {x.get('firstName','')}")
+
+    print(f"\n{'─'*80}")
+    print(f"{'NAME':<25} {'EMAIL':<30} {'END DATE':<14} {'CURRENT TYPES'}")
+    print(f"{'─'*80}")
+
+    for m in mismatched:
+        name  = f"{m.get('firstName','')} {m.get('lastName','')}".strip()
+        email = m.get("email", "")
+        end   = m.get("memberEnd", "")
+        types = ", ".join(m["_type_names"]) or "(none)"
+        print(f"{name[:24]:<25} {email[:29]:<30} {end[:13]:<14} {types}")
+
+    print(f"\n{'─'*80}")
+    print(f"Total scanned:                {len(all_members)}")
+    print(f"Valid date, missing role:     {len(mismatched)}")
+
+    if not mismatched:
+        print("\nNo mismatches found.")
+        return
+
+    output_file = "msr_missing_role.json"
+    with open(output_file, "w") as f:
+        json.dump([{k: v for k, v in m.items() if k != "_type_names"} for m in mismatched], f, indent=2)
+    print(f"\n✓ Full results saved to {output_file}")
+
 # ─── Usage ────────────────────────────────────────────────────────────────────
 def print_usage():
     print("""
 MSR Membership Utility
 ──────────────────────────────────────────────────────────────────────
 
-  --check-roles        Scan 2026 events for renewal purchasers and verify
-                       each has the Member role. Offers to fix any missing.
+  --check-roles        Scan past events for renewal purchasers and verify
+                       each has the Member role and a valid end date
+                       (12/31 of current year). Offers to fix any issues.
                        Output: msr_membership_role_check.json
+
+  --missing-role       Scan all members for anyone with a valid end date
+                       (12/31 of current year) but missing the Member role.
+                       Output: msr_missing_role.json
 
   --expired-members    List current Member-typed accounts whose memberEnd
                        date is in the past or not set. Works regardless of
@@ -430,6 +500,7 @@ MSR Membership Utility
 ──────────────────────────────────────────────────────────────────────
 Example:
   python membership.py --check-roles
+  python membership.py --missing-role
   python membership.py --expired-members
   python membership.py --member-types
   python membership.py --find-duplicates
@@ -439,6 +510,7 @@ Example:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--check-roles",      action="store_true")
+    parser.add_argument("--missing-role",     action="store_true")
     parser.add_argument("--expired-members",  action="store_true")
     parser.add_argument("--member-types",     action="store_true")
     parser.add_argument("--find-duplicates",  action="store_true")
@@ -446,6 +518,8 @@ if __name__ == "__main__":
 
     if args.check_roles:
         run_check_roles()
+    elif args.missing_role:
+        run_missing_role()
     elif args.expired_members:
         run_expired_members()
     elif args.member_types:
