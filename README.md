@@ -8,6 +8,7 @@ A command-line utility for club administrators to audit membership data in [Moto
 |---|---|
 | `--check-roles` | Scans past events for members who purchased a renewal package, verifies each has the `Member` role AND a `memberEnd` date of 12/31 of the current year, and offers to fix any that are wrong or missing. |
 | `--expired-members` | Lists all current `Member`-typed accounts whose `memberEnd` date is in the past (or not set). Works regardless of whether the member renewed online or offline. |
+| `--missing-role` | Scans all members for anyone with a valid `memberEnd` date (12/31 of current year) but missing the `Member` role. The inverse of `--check-roles`. |
 | `--member-types` | Prints all available member type labels from MSR. |
 | `--find-duplicates` | Scans the full member list for suspected duplicate accounts, matched by email, normalized name, or phone number. |
 | *(no flags)* | Prints the usage screen. |
@@ -41,6 +42,7 @@ You may also want to edit the `MEMBERSHIP_PACKAGES` set near the top of `members
 ```bash
 python membership.py                    # show usage screen
 python membership.py --check-roles
+python membership.py --missing-role
 python membership.py --expired-members
 python membership.py --member-types
 python membership.py --find-duplicates
@@ -64,6 +66,12 @@ John Doe                  john@example.com               ✗          ✗ 2025-1
 
 Entering `yes` at the prompt updates each affected record via the API — removing `Non-Member`, adding `Member`, and setting `memberEnd` to `12/31/<current year>`, preserving all other roles. Results saved to `msr_membership_role_check.json`.
 
+### `--missing-role`
+
+Fetches every member record individually and reports anyone whose `memberEnd` is `12/31/<current year>` but who lacks the `Member` role. This is the complement to `--check-roles` — it catches members who may have renewed offline or through a channel not reflected in event purchases. Results saved to `msr_missing_role.json`.
+
+Note: this scans the entire member list, so it's the slowest command.
+
 ### `--expired-members`
 
 Fetches every account currently typed `Member` and pulls each individual record to check the `memberEnd` date. Anyone whose date is in the past (or missing) appears in the report. Unlike `--check-roles`, this does not depend on event purchases — it works for offline renewals too. Results saved to `msr_expired_members.json`.
@@ -83,6 +91,7 @@ Pulls the full member list and groups accounts that share the same email (case-i
 All JSON output files are gitignored by default since they may contain member PII:
 
 - `msr_membership_role_check.json`
+- `msr_missing_role.json`
 - `msr_expired_members.json`
 - `msr_duplicate_members.json`
 
