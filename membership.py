@@ -86,16 +86,31 @@ def get_member_types():
             return val
     raise KeyError(f"No list found in response. Keys: {list(response.keys())}")
 
-def fix_member_roles(member_id, current_types):
-    """Remove Non-Member, add Member, keep everything else."""
+def parse_member_end(end_str):
+    """Parse a memberEnd string in any of MSR's date formats. Returns a date or None."""
+    if not end_str:
+        return None
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"):
+        try:
+            return datetime.strptime(end_str, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+def fix_member(member_id, current_types, set_member_end=None):
+    """Remove Non-Member, add Member, and optionally set memberEnd."""
     updated_types = [t for t in current_types if t != "Non-Member"]
     if "Member" not in updated_types:
         updated_types.append("Member")
 
+    payload = {"types": updated_types}
+    if set_member_end:
+        payload["memberEnd"] = set_member_end
+
     url = f"{BASE_URL}/rest/members/{member_id}.json"
     headers = get_headers()
     headers["Content-Type"] = "application/json"
-    r = requests.put(url, headers=headers, json={"types": updated_types})
+    r = requests.put(url, headers=headers, json=payload)
     r.raise_for_status()
     return updated_types
 
@@ -159,6 +174,10 @@ def run_check_roles():
     if not membership_buyers:
         return
 
+    current_year = datetime.now(timezone.utc).year
+    expected_end = datetime(current_year, 12, 31).date()
+    expected_end_str = f"12/31/{current_year}"
+
     results = []
     for member_id, buyer in membership_buyers.items():
         print(f"  Checking {buyer['name']} ({buyer['email']})...")
@@ -166,38 +185,54 @@ def run_check_roles():
             member = get_member(member_id)
         except requests.HTTPError as e:
             print(f"    ⚠ Could not fetch member record: {e}")
-            buyer["types"]      = "ERROR"
-            buyer["has_member"] = False
+            buyer["types"]       = "ERROR"
+            buyer["has_member"]  = False
+            buyer["end_date"]    = "ERROR"
+            buyer["end_ok"]      = False
             results.append(buyer)
             continue
 
         raw_types  = member.get("types", [])
         type_names = [t if isinstance(t, str) else t.get("name", "") for t in raw_types]
 
+        end_str  = member.get("memberEnd", "")
+        end_date = parse_member_end(end_str)
+
         buyer["types"]      = ", ".join(type_names) if type_names else "(none)"
         buyer["has_member"] = any(t.lower() == "member" for t in type_names)
         buyer["raw_types"]  = type_names
+        buyer["end_date"]   = str(end_date) if end_date else (end_str or "(none)")
+        buyer["end_ok"]     = end_date == expected_end
         results.append(buyer)
 
-    print(f"\n{'─'*90}")
-    print(f"{'NAME':<25} {'EMAIL':<30} {'HAS MEMBER':<12} {'CURRENT TYPES'}")
-    print(f"{'─'*90}")
+    print(f"\n{'─'*100}")
+    print(f"{'NAME':<25} {'EMAIL':<30} {'MEMBER':<10} {'END DATE':<14} {'TYPES'}")
+    print(f"{'─'*100}")
 
     needs_update = []
     for r in sorted(results, key=lambda x: x["name"]):
-        member_flag = "✓" if r["has_member"] else "✗ MISSING"
-        print(f"{r['name'][:24]:<25} {r['email'][:29]:<30} {member_flag:<12} {r['types']}")
-        if not r["has_member"]:
+        member_flag = "✓" if r["has_member"] else "✗"
+        end_flag    = "✓" if r["end_ok"] else "✗"
+        end_display = f"{end_flag} {r['end_date']}"
+        print(f"{r['name'][:24]:<25} {r['email'][:29]:<30} {member_flag:<10} {end_display[:13]:<14} {r['types']}")
+        if not r["has_member"] or not r["end_ok"]:
             needs_update.append(r)
 
-    print(f"\n{'─'*90}")
+    print(f"\n{'─'*100}")
     print(f"Total renewal purchasers:  {len(results)}")
-    print(f"Missing Member role:       {len(needs_update)}")
+    print(f"Missing Member role:       {sum(1 for r in results if not r['has_member'])}")
+    print(f"Wrong/missing end date:    {sum(1 for r in results if not r['end_ok'])}")
+    print(f"Need any fix:              {len(needs_update)}")
 
     if needs_update:
-        print("\nPeople who need roles fixed:")
+        print(f"\nPeople who need fixes (target end date: {expected_end_str}):")
         for r in needs_update:
-            print(f"  • {r['name']} ({r['email']}) — current types: {r['types']}")
+            issues = []
+            if not r["has_member"]:
+                issues.append("role")
+            if not r["end_ok"]:
+                issues.append(f"end date ({r['end_date']})")
+            print(f"  • {r['name']} ({r['email']}) — needs: {', '.join(issues)}")
 
         print()
         answer = input("Fix these members now? (yes/no): ").strip().lower()
@@ -206,8 +241,12 @@ def run_check_roles():
             for r in needs_update:
                 print(f"  Fixing {r['name']}...", end=" ")
                 try:
-                    new_types = fix_member_roles(r["member_id"], r["raw_types"])
-                    print(f"✓  types now: {', '.join(new_types)}")
+                    set_end = expected_end_str if not r["end_ok"] else None
+                    new_types = fix_member(r["member_id"], r["raw_types"], set_member_end=set_end)
+                    msg = f"types now: {', '.join(new_types)}"
+                    if set_end:
+                        msg += f"; end date set to {set_end}"
+                    print(f"✓ {msg}")
                 except requests.HTTPError as e:
                     print(f"✗ FAILED: {e}")
             print("\nDone.")
@@ -245,14 +284,7 @@ def run_expired_members():
             continue
 
         end_str = detail.get("memberEnd", "")
-        end_date = None
-        if end_str:
-            for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"):
-                try:
-                    end_date = datetime.strptime(end_str, fmt).date()
-                    break
-                except ValueError:
-                    continue
+        end_date = parse_member_end(end_str)
 
         if not end_date:
             print("no date" if not end_str else f"invalid date (raw: {end_str!r})")

@@ -6,7 +6,7 @@ A command-line utility for club administrators to audit membership data in [Moto
 
 | Flag | What it does |
 |---|---|
-| `--check-roles` | Scans past 2026 events for members who purchased a renewal package, verifies each has the `Member` role, and offers to fix any that are missing. |
+| `--check-roles` | Scans past events for members who purchased a renewal package, verifies each has the `Member` role AND a `memberEnd` date of 12/31 of the current year, and offers to fix any that are wrong or missing. |
 | `--expired-members` | Lists all current `Member`-typed accounts whose `memberEnd` date is in the past (or not set). Works regardless of whether the member renewed online or offline. |
 | `--member-types` | Prints all available member type labels from MSR. |
 | `--find-duplicates` | Scans the full member list for suspected duplicate accounts, matched by email, normalized name, or phone number. |
@@ -48,16 +48,21 @@ python membership.py --find-duplicates
 
 ### `--check-roles`
 
-Scans every past 2026 event for attendees who bought a renewal package, then verifies each purchaser's MSR record has the `Member` role assigned. Prints a summary table and prompts to fix any missing roles:
+Scans every past event for attendees who bought a renewal package, then verifies each purchaser's MSR record meets both conditions for a valid member:
+
+1. Has the `Member` role (not `Non-Member`)
+2. Has a `memberEnd` date of 12/31 of the current year
+
+Prints a summary table and prompts to fix anyone who fails either check:
 
 ```
-NAME                      EMAIL                          HAS MEMBER   CURRENT TYPES
-──────────────────────────────────────────────────────────────────────────────────────────
-Jane Smith                jane@example.com               ✓            Member, Driver
-John Doe                  john@example.com               ✗ MISSING    Non-Member, Driver
+NAME                      EMAIL                          MEMBER     END DATE       TYPES
+────────────────────────────────────────────────────────────────────────────────────────────────────
+Jane Smith                jane@example.com               ✓          ✓ 2026-12-31   Member, Driver
+John Doe                  john@example.com               ✗          ✗ 2025-12-31   Non-Member, Driver
 ```
 
-Entering `yes` at the prompt updates each affected record via the API — removing `Non-Member` and adding `Member` while preserving all other roles. Results saved to `msr_membership_role_check.json`.
+Entering `yes` at the prompt updates each affected record via the API — removing `Non-Member`, adding `Member`, and setting `memberEnd` to `12/31/<current year>`, preserving all other roles. Results saved to `msr_membership_role_check.json`.
 
 ### `--expired-members`
 
