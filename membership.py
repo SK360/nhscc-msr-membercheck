@@ -1,4 +1,5 @@
 import argparse
+import csv
 import os
 import re
 import sys
@@ -57,6 +58,12 @@ def get_2026_events():
 def get_attendees_with_packages(event_id):
     url = f"{BASE_URL}/rest/events/{event_id}/attendees.json"
     r = requests.get(url, headers=get_headers(), params={"fields": "packages"})
+    r.raise_for_status()
+    return r.json()["response"]["attendees"]
+
+def get_attendees(event_id):
+    url = f"{BASE_URL}/rest/events/{event_id}/attendees.json"
+    r = requests.get(url, headers=get_headers())
     r.raise_for_status()
     return r.json()["response"]["attendees"]
 
@@ -471,6 +478,92 @@ def run_missing_role():
         json.dump([{k: v for k, v in m.items() if k != "_type_names"} for m in mismatched], f, indent=2)
     print(f"\n✓ Full results saved to {output_file}")
 
+# ─── --event-registrants ─────────────────────────────────────────────────────
+def run_event_registrants():
+    print("Fetching 2026 events...")
+    events = get_2026_events()
+
+    if not events:
+        print("No past events found for 2026.")
+        return
+
+    first_five = sorted(events, key=lambda e: e.get("start", ""))[:5]
+
+    print(f"\nUsing first {len(first_five)} event(s):")
+    for e in first_five:
+        print(f"  • {e['name']} ({e.get('start','')[:10]})")
+
+    seen = {}  # member_id -> attendee dict
+    for event in first_five:
+        event_id   = event["id"]
+        event_name = event["name"]
+        print(f"\n  → Fetching attendees for {event_name}...")
+        try:
+            attendees = get_attendees(event_id)
+        except requests.HTTPError as e:
+            print(f"     ⚠ Could not fetch attendees: {e}")
+            continue
+
+        print(f"     {len(attendees)} attendee(s)")
+        for a in attendees:
+            member_uri = a.get("memberuri", "")
+            if member_uri:
+                member_id = member_uri.split("/members/")[-1]
+            else:
+                member_id = f"email:{_norm_email(a.get('email', ''))}"
+
+            if member_id not in seen:
+                seen[member_id] = a
+
+    print(f"\n  {len(seen)} unique registrant(s). Fetching mailing addresses...")
+
+    rows = []
+    for i, (member_id, a) in enumerate(seen.items(), 1):
+        name = f"{a.get('firstName','')} {a.get('lastName','')}".strip()
+        print(f"  [{i}/{len(seen)}] {name}...", end=" ", flush=True)
+
+        address1 = address2 = city = region = postal = country = ""
+
+        if not member_id.startswith("email:"):
+            try:
+                detail = get_member(member_id)
+                address1 = detail.get("address1", "") or ""
+                address2 = detail.get("address2", "") or ""
+                city     = detail.get("city", "")     or ""
+                region   = detail.get("region", "")   or ""
+                postal   = detail.get("postalCode", "") or ""
+                country  = detail.get("country", "")  or ""
+                print("ok")
+            except requests.HTTPError as e:
+                print(f"⚠ skipped ({e})")
+        else:
+            print("no member record")
+
+        rows.append({
+            "First Name":   a.get("firstName", ""),
+            "Last Name":    a.get("lastName", ""),
+            "Email":        a.get("email", ""),
+            "Address 1":    address1,
+            "Address 2":    address2,
+            "City":         city,
+            "State/Region": region,
+            "Postal Code":  postal,
+            "Country":      country,
+        })
+
+    rows.sort(key=lambda r: (r["Last Name"].lower(), r["First Name"].lower()))
+
+    output_file = "msr_event_registrants.csv"
+    fieldnames = ["First Name", "Last Name", "Email", "Address 1", "Address 2", "City", "State/Region", "Postal Code", "Country"]
+    with open(output_file, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print(f"\n{'─'*60}")
+    print(f"Total unique registrants: {len(rows)}")
+    print(f"✓ Results saved to {output_file}")
+
 # ─── Usage ────────────────────────────────────────────────────────────────────
 def print_usage():
     print("""
@@ -497,6 +590,10 @@ MSR Membership Utility
                        accounts, matched by email, name, or phone number.
                        Output: msr_duplicate_members.json
 
+  --event-registrants  List every unique person who registered for the first
+                       5 events this season, with mailing address and email.
+                       Output: msr_event_registrants.csv
+
 ──────────────────────────────────────────────────────────────────────
 Example:
   python membership.py --check-roles
@@ -504,16 +601,18 @@ Example:
   python membership.py --expired-members
   python membership.py --member-types
   python membership.py --find-duplicates
+  python membership.py --event-registrants
 """)
 
 # ─── Entry Point ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--check-roles",      action="store_true")
-    parser.add_argument("--missing-role",     action="store_true")
-    parser.add_argument("--expired-members",  action="store_true")
-    parser.add_argument("--member-types",     action="store_true")
-    parser.add_argument("--find-duplicates",  action="store_true")
+    parser.add_argument("--check-roles",        action="store_true")
+    parser.add_argument("--missing-role",       action="store_true")
+    parser.add_argument("--expired-members",    action="store_true")
+    parser.add_argument("--member-types",       action="store_true")
+    parser.add_argument("--find-duplicates",    action="store_true")
+    parser.add_argument("--event-registrants",  action="store_true")
     args = parser.parse_args()
 
     if args.check_roles:
@@ -526,5 +625,7 @@ if __name__ == "__main__":
         run_member_types()
     elif args.find_duplicates:
         run_duplicate_scan()
+    elif args.event_registrants:
+        run_event_registrants()
     else:
         print_usage()
